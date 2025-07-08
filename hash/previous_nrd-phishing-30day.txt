@@ -1,1 +1,0 @@
-a19f3fc059c28ffa07b3d24e3a56b10213245b7aca74776d1e29b303120e4a27  lists/30-day_phishing/domains-only/nrd-phishing-30day.txt

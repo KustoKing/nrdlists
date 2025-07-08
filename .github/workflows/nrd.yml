@@ -16,7 +16,7 @@ jobs:
     - name: ☕ Install Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y unzip curl coreutils
+        sudo apt-get install -y unzip curl coreutils moreutils
 
     - name: 📁 Download NRD, Entropy, and Phishing Feeds
       env:
@@ -57,12 +57,16 @@ jobs:
       run: |
         set -euo pipefail
         for file in $(find lists -type f -name '*.txt'); do
+          if [ $(wc -l < "$file") -eq 0 ]; then
+            echo "⚠️ Skipping empty file: $file"
+            continue
+          fi
           echo "📜 Decoding $file ($(wc -l < "$file") lines)"
           start=$(date +%s)
-          awk '{ print | "base64 -d 2>/dev/null" }' "$file" > "$file.decoded"
+          awk '{ print | "base64 -d 2>/dev/null" }' "$file" > "$file.decoded" || echo "⚠️ Warning: decoding failed for $file"
           mv "$file.decoded" "$file"
           end=$(date +%s)
-          echo "⏱ Done in $((end - start))s"
+          echo "⏱️ Done in $((end - start))s"
         done
 
     - name: ⚖️ Compare File Hashes

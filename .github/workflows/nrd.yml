@@ -108,7 +108,7 @@ jobs:
       run: |
         set -euo pipefail
         curl -fsSLo iana-tlds.txt https://data.iana.org/TLD/tlds-alpha-by-domain.txt
-        awk '{print tolower($0)}' iana-tlds.txt > iana-tlds.txt
+        awk '{print tolower($0)}' iana-tlds.txt > iana-tlds.tmp && mv iana-tlds.tmp iana-tlds.txt
         for file in $(find lists -name '*.txt'); do
           grep -vFxf iana-tlds.txt "$file" > "$file.tmp" && mv "$file.tmp" "$file"
         done
@@ -120,8 +120,8 @@ jobs:
         unzip -jo top1m/umbrella.zip '*.csv' -d top1m/ || true
         unzip -jo top1m/tranco.zip '*.csv' -d top1m/ || true
 
-        awk -F, '{ print $2 }' top1m/*umbrella*.csv > top1m/umbrella.txt || true
-        awk -F, '{ print $2 }' top1m/*tranco*.csv > top1m/tranco.txt || true
+        awk -F, 'NR>1 && $2 ~ /^[a-zA-Z0-9.-]+$/ { print $2 }' top1m/*umbrella*.csv > top1m/umbrella.txt || true
+        awk -F, 'NR>1 && $2 ~ /^[a-zA-Z0-9.-]+$/ { print $2 }' top1m/*tranco*.csv > top1m/tranco.txt || true
 
         cat top1m/umbrella.txt top1m/tranco.txt | sort -u > top1m-blocklist.txt || true
         for file in $(find lists -name '*.txt'); do
@@ -138,6 +138,7 @@ jobs:
             echo "🚨 Splitting $file (${size}B)"
             split --bytes=80MB --numeric-suffixes=1 --additional-suffix=.part.txt "$file" "$file."
             rm "$file"
+            echo "🧹 Removed original: $file"
           fi
         done
 
@@ -146,10 +147,10 @@ jobs:
         set -euo pipefail
         git config user.name "KustoKing[bot]"
         git config user.email "gianni@kustoking.com"
-        git reset --hard
-        git clean -fd
         git fetch origin
+        git stash --include-untracked || true
         git rebase origin/main || git pull --rebase
+        git stash pop || true
         git add lists hash || true
         if ! git diff --cached --quiet; then
           git commit -m "ci: update NRD lists $(date +'%Y-%m-%d %H:%M')"

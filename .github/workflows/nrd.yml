@@ -78,16 +78,16 @@ jobs:
 
           rm -rf extracted
 
-      - name: 🔐 Decode Base64-Encoded Lines
+      - name: 🔓 Decode Base64 Lines in Standardized Lists
         run: |
           set -euo pipefail
           for file in $(find lists -name '*.txt'); do
-            echo "📅 Decoding Base64 in $file"
-            base64 -d < "$file" > "$file.decoded" 2>/dev/null || {
-              echo "❌ Failed to decode $file. Skipping."
-              rm -f "$file.decoded"
-              continue
-            }
+            echo "📥 Decoding Base64 (line-by-line) in $file"
+            {
+              while IFS= read -r line; do
+                echo "$line" | base64 -d 2>/dev/null || echo "⚠️ Base64 decode failed"
+              done
+            } < "$file" > "$file.decoded"
             mv "$file.decoded" "$file"
           done
 

@@ -104,8 +104,6 @@ jobs:
 
       - name: Apply TLD and Top-1M domain filtering
         if: env.changed != '0'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           set -euo pipefail
           # TLD filtering
@@ -133,14 +131,8 @@ jobs:
           unzip -jo top1m/tranco.zip '*.csv' -d top1m/
           awk -F, '{print $2}' top1m/*.csv > top1m/tranco.txt
 
-          # Cloudflare Radar Top 1M
-          curl -fsS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
-            -o top1m/cloudflare.csv \
-            "https://api.cloudflare.com/client/v4/radar/data/domain-rankings/today/top-1000000.csv"
-          awk -F, 'NR>1 {print $1}' top1m/cloudflare.csv > top1m/cloudflare.txt
-
           # Combine and deduplicate
-          cat top1m/umbrella.txt top1m/builtwith.txt top1m/tranco.txt top1m/cloudflare.txt | sort -u > top1m-blocklist.txt
+          cat top1m/umbrella.txt top1m/builtwith.txt top1m/tranco.txt | sort -u > top1m-blocklist.txt
           for file in extracted/*.txt; do
             grep -vFxf top1m-blocklist.txt "$file" > "$file.tmp" && mv "$file.tmp" "$file"
           done

@@ -64,7 +64,7 @@ jobs:
           tar -xzf "$file" -C extracted/
         done
 
-    - name: 🖖️ Organize and Standardize Extracted Lists
+    - name: 🚖 Organize and Standardize Extracted Lists
       run: |
         mkdir -p lists/{14-day,30-day}/{domains-only,high-entropy,phishing/domains-only}
         cp extracted/rules/nrd-30day              lists/30-day/domains-only/nrd-30day.txt || true
@@ -148,7 +148,8 @@ jobs:
         git config user.email "gianni@kustoking.com"
         git add lists hash || true
         if ! git diff --cached --quiet; then
-          git pull --rebase
+          git fetch origin
+          git rebase origin/main || git pull --rebase
           git commit -m "ci: update NRD lists $(date +'%Y-%m-%d %H:%M')"
           git push
         else

@@ -64,35 +64,50 @@ jobs:
             tar -xzf "$f" -C extracted
           done
 
-      - name: Generate and compare hashes
+      - name: Debug: List extracted files
+        run: |
+          echo "Extracted files:"
+          ls -l extracted || true
+
+      - name: Generate and compare hashes (or force if files missing)
         id: hash
         run: |
           set -euo pipefail
           mkdir -p hash
           CHANGED=0
+          FILES_EXIST=1
           for file in nrd-30 entropy-30 phishing-30 nrd-14 entropy-14 phishing-14; do
-            # Use only the first .txt file per type for simplicity; adjust if more
             fpath=$(ls extracted/$file*.txt 2>/dev/null | head -n 1 || true)
-            if [ -n "$fpath" ]; then
-              sha256sum "$fpath" > "hash/current_$file.txt"
-              if [ ! -f "hash/previous_$file.txt" ] || ! cmp -s "hash/previous_$file.txt" "hash/current_$file.txt"; then
-                echo "$file changed"
-                CHANGED=1
-              fi
+            if [ ! -f "$fpath" ]; then
+              echo "$file missing, will force processing"
+              FILES_EXIST=0
             fi
           done
+          if [ "$FILES_EXIST" -eq 0 ]; then
+            CHANGED=1
+          else
+            for file in nrd-30 entropy-30 phishing-30 nrd-14 entropy-14 phishing-14; do
+              fpath=$(ls extracted/$file*.txt 2>/dev/null | head -n 1 || true)
+              if [ -n "$fpath" ]; then
+                sha256sum "$fpath" > "hash/current_$file.txt"
+                if [ ! -f "hash/previous_$file.txt" ] || ! cmp -s "hash/previous_$file.txt" "hash/current_$file.txt"; then
+                  echo "$file changed"
+                  CHANGED=1
+                fi
+              fi
+            done
+          fi
           echo "changed=$CHANGED" >> $GITHUB_ENV
 
       - name: Abort if no input changes detected
         if: env.changed == '0'
         run: echo "No changes detected. Exiting early."
 
-      # --- Only runs if something changed ---
+      # --- Only runs if something changed or files missing ---
       - name: Run main list processing
         if: env.changed != '0'
         run: |
           set -euo pipefail
-          # You may need to adjust the input location if your script expects certain files
           python3 src/nrd-hunter.py
 
       - name: Apply TLD and Top-1M domain filtering
@@ -135,7 +150,7 @@ jobs:
               echo "Warning: File $src does not exist."
             fi
           }
-          # Example moves (extend as needed for all outputs your script produces)
+          # Example moves (add as needed)
           move_if_exists output/nrd-14day.txt lists/14-day/domains-only/
           move_if_exists output/nrd-30day.txt lists/30-day/domains-only/
           move_if_exists output/entropy-14day.txt lists/14-day/high-entropy/
@@ -176,8 +191,9 @@ jobs:
         run: |
           set -euo pipefail
           for file in nrd-30 entropy-30 phishing-30 nrd-14 entropy-14 phishing-14; do
-            if [ -f "hash/current_$file.txt" ]; then
-              mv "hash/current_$file.txt" "hash/previous_$file.txt"
+            fpath="hash/current_$file.txt"
+            if [ -f "$fpath" ]; then
+              mv "$fpath" "hash/previous_$file.txt"
             fi
           done
           git add hash/previous_*.txt

@@ -21,7 +21,7 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y unzip curl coreutils moreutils
 
-    - name: 📁 Download NRD, Entropy, and Phishing Feeds
+    - name: 📁 Download NRD, Entropy, and Phishing Feeds (with Retry)
       env:
         NRD_30:        ${{ secrets.STAMUS_NRD_30_URL }}
         ENTROPY_30:    ${{ secrets.STAMUS_ENTROPY_30_URL }}
@@ -32,12 +32,30 @@ jobs:
       run: |
         set -euo pipefail
         mkdir -p feeds
-        curl -fsSLo feeds/nrd-30.tar.gz        "$NRD_30"
-        curl -fsSLo feeds/entropy-30.tar.gz    "$ENTROPY_30"
-        curl -fsSLo feeds/phishing-30.tar.gz   "$PHISHING_30"
-        curl -fsSLo feeds/nrd-14.tar.gz        "$NRD_14"
-        curl -fsSLo feeds/entropy-14.tar.gz    "$ENTROPY_14"
-        curl -fsSLo feeds/phishing-14.tar.gz   "$PHISHING_14"
+        download() {
+          local url=$1
+          local dest=$2
+          local retries=3
+          for i in $(seq 1 $retries); do
+            echo "➡️ Attempt $i to download $url"
+            if curl -fsSLo "$dest" "$url"; then
+              echo "✅ Downloaded $dest"
+              return 0
+            else
+              echo "⚠️ Failed attempt $i for $url"
+              sleep 2
+            fi
+          done
+          echo "❌ All retries failed for $url"
+          return 1
+        }
+
+        download "$NRD_30" feeds/nrd-30.tar.gz
+        download "$ENTROPY_30" feeds/entropy-30.tar.gz
+        download "$PHISHING_30" feeds/phishing-30.tar.gz
+        download "$NRD_14" feeds/nrd-14.tar.gz
+        download "$ENTROPY_14" feeds/entropy-14.tar.gz
+        download "$PHISHING_14" feeds/phishing-14.tar.gz
 
     - name: 📦 Extract Archives
       run: |
@@ -46,28 +64,30 @@ jobs:
           tar -xzf "$file" -C extracted/
         done
 
-    - name: 🖖 Organize and Standardize Extracted Lists
+    - name: 🖖️ Organize and Standardize Extracted Lists
       run: |
         mkdir -p lists/{14-day,30-day}/{domains-only,high-entropy,phishing/domains-only}
         cp extracted/rules/nrd-30day              lists/30-day/domains-only/nrd-30day.txt || true
         cp extracted/rules/nrd-entropy-30day      lists/30-day/high-entropy/nrd-entropy-30day.txt || true
-        cp extracted/rules/nrtd-phishing-30day    lists/30-day/phishing/domains-only/nrd-phishing-30day.txt || true
+        cp extracted/rules/nrd-phishing-30day     lists/30-day/phishing/domains-only/nrd-phishing-30day.txt || true
         cp extracted/rules/nrd-14day              lists/14-day/domains-only/nrd-14day.txt || true
         cp extracted/rules/nrd-entropy-14day      lists/14-day/high-entropy/nrd-entropy-14day.txt || true
-        cp extracted/rules/nrtd-phishing-14day    lists/14-day/phishing/domains-only/nrd-phishing-14day.txt || true
+        cp extracted/rules/nrd-phishing-14day     lists/14-day/phishing/domains-only/nrd-phishing-14day.txt || true
 
-    - name: 🔐 Decode Base64 Lines in Standardized Lists
+    - name: 🔐 Decode Base64 Lines in Standardized Lists (with Benchmark)
       run: |
         set -euo pipefail
         for file in $(find lists -type f -name '*.txt'); do
-          lines=$(wc -l < "$file")
-          if [ "$lines" -eq 0 ]; then
+          if [ $(wc -l < "$file") -eq 0 ]; then
             echo "⚠️ Skipping empty file: $file"
             continue
           fi
-          echo "📜 Decoding $file ($lines lines)"
-          awk '{ system("echo " $0 " | base64 -d 2>/dev/null") }' "$file" > "$file.decoded" || echo "⚠️ Decoding failed for $file"
+          echo "📜 Decoding $file ($(wc -l < "$file") lines)"
+          start=$(date +%s)
+          awk '{ print | "base64 -d 2>/dev/null" }' "$file" > "$file.decoded" || echo "⚠️ Warning: decoding failed for $file"
           mv "$file.decoded" "$file"
+          end=$(date +%s)
+          echo "⏱️ Done in $((end - start))s"
         done
 
     - name: ⚖️ Compare File Hashes
@@ -126,10 +146,9 @@ jobs:
         set -euo pipefail
         git config user.name "KustoKing[bot]"
         git config user.email "gianni@kustoking.com"
-        git fetch origin main
-        git pull --rebase
         git add lists hash || true
         if ! git diff --cached --quiet; then
+          git pull --rebase
           git commit -m "ci: update NRD lists $(date +'%Y-%m-%d %H:%M')"
           git push
         else

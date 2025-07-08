@@ -31,12 +31,11 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v3
 
-      - name: Set up Python and system dependencies
+      - name: Set up system dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y unzip
-          pip install --upgrade pip requests matplotlib tldextract
 
       - name: Download NRD, Entropy, and Phishing Feeds
         env:
@@ -104,22 +103,15 @@ jobs:
         run: echo "No changes detected. Exiting early."
 
       # --- Only runs if something changed or files missing ---
-      - name: Run main list processing
-        if: env.changed != '0'
-        run: |
-          set -euo pipefail
-          python3 src/nrd-hunter.py
-
       - name: Apply TLD and Top-1M domain filtering
         if: env.changed != '0'
         run: |
           set -euo pipefail
           curl -fsS -O https://data.iana.org/TLD/tlds-alpha-by-domain.txt
           awk '{print tolower($0)}' tlds-alpha-by-domain.txt > iana-tlds.txt
-          for file in output/*.txt; do
+          for file in extracted/*.txt; do
             grep -vFxf iana-tlds.txt "$file" > "$file.tmp" && mv "$file.tmp" "$file"
           done
-          # Top-1M filtering
           mkdir -p top1m
           curl -fsS -o top1m/umbrella.zip "https://s3-us-west-1.amazonaws.com/umbrella-static/top-1m.csv.zip"
           unzip -jo top1m/umbrella.zip '*.csv' -d top1m/
@@ -131,7 +123,7 @@ jobs:
           unzip -jo top1m/tranco.zip '*.csv' -d top1m/
           awk -F, '{print $2}' top1m/*.csv > top1m/tranco.txt
           cat top1m/umbrella.txt top1m/builtwith.txt top1m/tranco.txt | sort -u > top1m-blocklist.txt
-          for file in output/*.txt; do
+          for file in extracted/*.txt; do
             grep -vFxf top1m-blocklist.txt "$file" > "$file.tmp" && mv "$file.tmp" "$file"
           done
           rm -rf top1m iana-tlds.txt tlds-alpha-by-domain.txt
@@ -151,25 +143,13 @@ jobs:
             fi
           }
           # Example moves (add as needed)
-          move_if_exists output/nrd-14day.txt lists/14-day/domains-only/
-          move_if_exists output/nrd-30day.txt lists/30-day/domains-only/
-          move_if_exists output/entropy-14day.txt lists/14-day/high-entropy/
-          move_if_exists output/entropy-30day.txt lists/30-day/high-entropy/
-          move_if_exists output/phishing-14day.txt lists/14-day_phishing/domains-only/
-          move_if_exists output/phishing-30day.txt lists/30-day_phishing/domains-only/
+          move_if_exists extracted/nrd-14.txt lists/14-day/domains-only/
+          move_if_exists extracted/nrd-30.txt lists/30-day/domains-only/
+          move_if_exists extracted/entropy-14.txt lists/14-day/high-entropy/
+          move_if_exists extracted/entropy-30.txt lists/30-day/high-entropy/
+          move_if_exists extracted/phishing-14.txt lists/14-day_phishing/domains-only/
+          move_if_exists extracted/phishing-30.txt lists/30-day_phishing/domains-only/
           # ... Add other output formats as needed
-
-      - name: Generate statistics image
-        if: env.changed != '0'
-        run: |
-          set -euo pipefail
-          python3 src/generate-stats.py
-
-      - name: Move statistics image
-        if: env.changed != '0'
-        run: |
-          set -euo pipefail
-          mkdir -p img && mv stats.png img/
 
       - name: Commit & push updates
         if: env.changed != '0'
@@ -177,7 +157,7 @@ jobs:
           set -euo pipefail
           git config user.name "KustoKing[bot]"
           git config user.email "gianni@kustoking.com"
-          git add lists img/stats.png hash/current_*.txt
+          git add lists hash/current_*.txt
           if ! git diff --cached --quiet; then
             DATE=$(date +'%Y%m%d')
             git commit -m "ci: update NRD lists $DATE"

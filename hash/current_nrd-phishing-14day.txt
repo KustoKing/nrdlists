@@ -1,0 +1,1 @@
+6e09087b073ffa3a73279d4224289346386f0cc02f5cc62a115ef2363fb8952f  lists/14-day_phishing/domains-only/nrd-phishing-14day.txt

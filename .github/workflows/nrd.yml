@@ -146,10 +146,12 @@ jobs:
         set -euo pipefail
         git config user.name "KustoKing[bot]"
         git config user.email "gianni@kustoking.com"
+        git reset --hard
+        git clean -fd
+        git fetch origin
+        git rebase origin/main || git pull --rebase
         git add lists hash || true
         if ! git diff --cached --quiet; then
-          git fetch origin
-          git rebase origin/main || git pull --rebase
           git commit -m "ci: update NRD lists $(date +'%Y-%m-%d %H:%M')"
           git push
         else

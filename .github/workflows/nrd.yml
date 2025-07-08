@@ -2,7 +2,7 @@ name: Update NRD List
 
 on:
   schedule:
-    - cron: "10 1,3,5,7,9,11,13,15,17,19,21,23 * * *"  # Every 2 hours, 10 minutes past
+    - cron: "7 */2 * * *"
   workflow_dispatch:
 
 permissions:
@@ -53,10 +53,7 @@ jobs:
           done
           rm -rf downloads
 
-      - name: 🐾 Debug Extracted Files
-        run: find extracted -type f | sort
-
-      - name: 🧹 Normalize and Organize Extracted Lists
+      - name: 🧹 Organize Extracted Files
         run: |
           set -euo pipefail
           mkdir -p lists/14-day/domains-only lists/30-day/domains-only
@@ -68,7 +65,7 @@ jobs:
             if [[ -f "$src" ]]; then
               cp "$src" "$dest/$name.txt"
             else
-              echo "⚠️ Warning: $src not found"
+              echo "⚠️ Missing: $src"
             fi
           }
 
@@ -104,22 +101,19 @@ jobs:
         if: env.changed == '0'
         run: echo "✅ No changes detected. Skipping filtering and commit."
 
-      - name: 🧽 Apply TLD & Top-1M Filtering
+      - name: 🧽 Apply TLD and Top-1M Filtering
         if: env.changed != '0'
         run: |
           set -euo pipefail
 
-          # Filter by valid IANA TLDs
           curl -fsS -O https://data.iana.org/TLD/tlds-alpha-by-domain.txt
           awk '{print tolower($0)}' tlds-alpha-by-domain.txt > iana-tlds.txt
           for file in lists/*/*/*.txt; do
             grep -vFxf iana-tlds.txt "$file" > "$file.tmp" && mv "$file.tmp" "$file"
           done
 
-          # Create folder
           mkdir -p top1m
 
-          # Define function
           download_or_skip() {
             name="$1"; url="$2"; output="$3"
             echo "🌐 Downloading $name..."
@@ -127,33 +121,45 @@ jobs:
               echo "✅ $name downloaded."
             else
               echo "⚠️ $name download failed: $url — continuing without it." >&2
-              touch "$output"  # Prevent unzip failure
+              touch "$output"
             fi
           }
 
-          # Download zip sources
-          download_or_skip "Umbrella" "https://s3-us-west-1.amazonaws.com/umbrella-static/top-1m.csv.zip" "top1m/umbrella.zip"
+          download_or_skip "Umbrella"  "https://s3-us-west-1.amazonaws.com/umbrella-static/top-1m.csv.zip" "top1m/umbrella.zip"
           download_or_skip "BuiltWith" "https://builtwith.com/dl/builtwith-top1m.zip" "top1m/builtwith.zip"
-          download_or_skip "Tranco" "https://tranco-list.eu/download/daily/top-1m.csv.zip" "top1m/tranco.zip"
+          download_or_skip "Tranco"    "https://tranco-list.eu/download/daily/top-1m.csv.zip" "top1m/tranco.zip"
 
-          # Extract CSVs
           ls -lh top1m/*.zip || echo "📦 No zip files found to extract"
+
           unzip -jo top1m/umbrella.zip '*.csv' -d top1m/ || true
           unzip -jo top1m/builtwith.zip '*.csv' -d top1m/ || true
           unzip -jo top1m/tranco.zip '*.csv' -d top1m/ || true
 
-          # Extract domains
           awk -F, '{print $2}' top1m/*umbrella*.csv > top1m/umbrella.txt || true
           awk -F, '{print $2}' top1m/*builtwith*.csv > top1m/builtwith.txt || true
           awk -F, '{print $2}' top1m/*tranco*.csv > top1m/tranco.txt || true
 
-          # Merge and filter
           cat top1m/*.txt | sort -u > top1m-blocklist.txt || touch top1m-blocklist.txt
+
           for file in lists/*/*/*.txt; do
             grep -vFxf top1m-blocklist.txt "$file" > "$file.tmp" && mv "$file.tmp" "$file"
           done
 
           rm -rf top1m iana-tlds.txt tlds-alpha-by-domain.txt
+
+      - name: 🧨 Split Large Files (>90MB)
+        if: env.changed != '0'
+        run: |
+          set -euo pipefail
+          threshold=$((90 * 1024 * 1024))
+          for file in $(find lists -name '*.txt'); do
+            size=$(stat -c%s "$file")
+            if [ "$size" -gt "$threshold" ]; then
+              echo "🚨 Splitting $file ($size bytes)"
+              split --bytes=80MB --numeric-suffixes=1 --additional-suffix=.part.txt "$file" "$file."
+              rm "$file"
+            fi
+          done
 
       - name: 🚀 Commit & Push Updates
         if: env.changed != '0'

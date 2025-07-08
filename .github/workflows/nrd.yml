@@ -2,8 +2,11 @@ name: ✨ Update NRD Lists
 
 on:
   schedule:
-    - cron: "7 */2 * * *"  # Every 2 hours
+    - cron: "7 */2 * * *"
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   update:
@@ -40,10 +43,10 @@ jobs:
       run: |
         mkdir -p extracted
         for file in feeds/*.tar.gz; do
-          tar -xzf "$file" -C extracted/ || echo "⚠️ Failed to extract $file"
+          tar -xzf "$file" -C extracted/
         done
 
-    - name: 🗖️ Organize and Standardize Extracted Lists
+    - name: 🖖️ Organize and Standardize Extracted Lists
       run: |
         mkdir -p lists/{14-day,30-day}/{domains-only,high-entropy,phishing/domains-only}
         cp extracted/rules/nrd-30day              lists/30-day/domains-only/nrd-30day.txt || true
@@ -63,7 +66,7 @@ jobs:
           fi
           echo "📜 Decoding $file ($(wc -l < "$file") lines)"
           start=$(date +%s)
-          awk '{ print | "base64 -d 2>/dev/null" }' "$file" > "$file.decoded" || echo "⚠️ Decode warning: $file"
+          awk '{ print | "base64 -d 2>/dev/null" }' "$file" > "$file.decoded" || echo "⚠️ Warning: decoding failed for $file"
           mv "$file.decoded" "$file"
           end=$(date +%s)
           echo "⏱️ Done in $((end - start))s"
@@ -99,8 +102,8 @@ jobs:
         unzip -jo top1m/umbrella.zip '*.csv' -d top1m/ || true
         unzip -jo top1m/tranco.zip '*.csv' -d top1m/ || true
 
-        find top1m -name '*umbrella*.csv' -exec awk -F, '{print $2}' {} + > top1m/umbrella.txt || true
-        find top1m -name '*tranco*.csv'   -exec awk -F, '{print $2}' {} + > top1m/tranco.txt   || true
+        awk -F, '{ print $2 }' top1m/*umbrella*.csv > top1m/umbrella.txt || true
+        awk -F, '{ print $2 }' top1m/*tranco*.csv > top1m/tranco.txt || true
 
         cat top1m/umbrella.txt top1m/tranco.txt | sort -u > top1m-blocklist.txt || true
         for file in $(find lists -name '*.txt'); do

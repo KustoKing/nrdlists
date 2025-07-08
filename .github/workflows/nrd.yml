@@ -1,194 +1,207 @@
-name: ✨ Update NRD Lists
+name: Update NRD List
 
 on:
   schedule:
-    - cron: "7 */2 * * *"
+    - cron: "7 */2 * * *"  # Every 2 hours, 7 min past the hour
   workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
 jobs:
-  update:
+  update-nrd-list:
     runs-on: ubuntu-latest
 
     steps:
-    - name: ✅ Checkout Repository
-      uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v3
 
-    - name: ☕ Install Dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y unzip curl coreutils moreutils
+      - name: Install Dependencies
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y unzip curl
 
-    - name: 📁 Download NRD, Entropy, and Phishing Feeds (with Retry)
-      env:
-        NRD_30:        ${{ secrets.STAMUS_NRD_30_URL }}
-        ENTROPY_30:    ${{ secrets.STAMUS_ENTROPY_30_URL }}
-        PHISHING_30:   ${{ secrets.STAMUS_PHISHING_30_URL }}
-        NRD_14:        ${{ secrets.STAMUS_NRD_14_URL }}
-        ENTROPY_14:    ${{ secrets.STAMUS_ENTROPY_14_URL }}
-        PHISHING_14:   ${{ secrets.STAMUS_PHISHING_14_URL }}
-      run: |
-        set -euo pipefail
-        mkdir -p feeds
-        download() {
-          local url=$1
-          local dest=$2
-          local retries=3
-          for i in $(seq 1 $retries); do
-            echo "➔ Attempt $i to download $url"
-            if curl -fsSLo "$dest" "$url"; then
-              echo "✅ Downloaded $dest"
-              date -R -r "$dest" > "$dest.timestamp"
-              return 0
+      - name: Download NRD, Entropy, and Phishing Feeds
+        env:
+          STAMUS_NRD_30_URL: ${{ secrets.STAMUS_NRD_30_URL }}
+          STAMUS_ENTROPY_30_URL: ${{ secrets.STAMUS_ENTROPY_30_URL }}
+          STAMUS_PHISHING_30_URL: ${{ secrets.STAMUS_PHISHING_30_URL }}
+          STAMUS_NRD_14_URL: ${{ secrets.STAMUS_NRD_14_URL }}
+          STAMUS_ENTROPY_14_URL: ${{ secrets.STAMUS_ENTROPY_14_URL }}
+          STAMUS_PHISHING_14_URL: ${{ secrets.STAMUS_PHISHING_14_URL }}
+        run: |
+          set -euo pipefail
+          mkdir -p downloads
+          curl -fsS -o downloads/nrd-30.tar.gz "$STAMUS_NRD_30_URL"
+          curl -fsS -o downloads/entropy-30.tar.gz "$STAMUS_ENTROPY_30_URL"
+          curl -fsS -o downloads/phishing-30.tar.gz "$STAMUS_PHISHING_30_URL"
+          curl -fsS -o downloads/nrd-14.tar.gz "$STAMUS_NRD_14_URL"
+          curl -fsS -o downloads/entropy-14.tar.gz "$STAMUS_ENTROPY_14_URL"
+          curl -fsS -o downloads/phishing-14.tar.gz "$STAMUS_PHISHING_14_URL"
+
+      - name: Extract Archives
+        run: |
+          set -euo pipefail
+          mkdir -p extracted
+          for f in downloads/*.tar.gz; do
+            tar -xzf "$f" -C extracted
+          done
+          rm -rf downloads
+
+      - name: Organize and Standardize Extracted Lists
+        run: |
+          set -euo pipefail
+          mkdir -p lists/14-day/domains-only lists/30-day/domains-only
+          mkdir -p lists/14-day/high-entropy lists/30-day/high-entropy
+          mkdir -p lists/14-day_phishing/domains-only lists/30-day_phishing/domains-only
+
+          move_if_exists() {
+            src=$1; dest=$2; name=$3
+            if [[ -f "$src" ]]; then
+              cp "$src" "$dest/$name.txt"
             else
-              echo "⚠️ Failed attempt $i for $url"
-              sleep 2
+              echo "⚠️ Missing: $src"
+            fi
+          }
+
+          move_if_exists extracted/rules/nrd-14day              lists/14-day/domains-only          nrd-14day
+          move_if_exists extracted/rules/nrd-30day              lists/30-day/domains-only          nrd-30day
+          move_if_exists extracted/rules/nrd-entropy-14day      lists/14-day/high-entropy          nrd-entropy-14day
+          move_if_exists extracted/rules/nrd-entropy-30day      lists/30-day/high-entropy          nrd-entropy-30day
+          move_if_exists extracted/rules/nrd-phishing-14day     lists/14-day_phishing/domains-only nrd-phishing-14day
+          move_if_exists extracted/rules/nrd-phishing-30day     lists/30-day_phishing/domains-only nrd-phishing-30day
+
+          rm -rf extracted
+
+      - name: 🔓 Decode Base64 Lines in Standardized Lists
+        run: |
+          set -euo pipefail
+          for file in $(find lists -name '*.txt'); do
+            echo "📥 Decoding Base64 (line-by-line) in $file"
+            {
+              while IFS= read -r line; do
+                decoded=$(echo "$line" | base64 -d 2>/dev/null || echo "")
+                [ -n "$decoded" ] && echo "$decoded"
+              done
+            } < "$file" > "$file.decoded"
+            mv "$file.decoded" "$file"
+          done
+
+      - name: Compare File Hashes
+        id: hashcheck
+        run: |
+          set -euo pipefail
+          mkdir -p hash
+          CHANGED=0
+
+          for path in lists/*/*/*.txt; do
+            [ -f "$path" ] || { echo "❌ Missing: $path"; CHANGED=1; continue; }
+            name=$(basename "$path" .txt)
+            sha256sum "$path" > "hash/current_$name.txt"
+            if [[ ! -f "hash/previous_$name.txt" ]] || ! cmp -s "hash/previous_$name.txt" "hash/current_$name.txt"; then
+              echo "➕ Changed: $name"
+              CHANGED=1
             fi
           done
-          echo "❌ All retries failed for $url"
-          return 1
-        }
 
-        download "$NRD_30" feeds/nrd-30.tar.gz
-        download "$ENTROPY_30" feeds/entropy-30.tar.gz
-        download "$PHISHING_30" feeds/phishing-30.tar.gz
-        download "$NRD_14" feeds/nrd-14.tar.gz
-        download "$ENTROPY_14" feeds/entropy-14.tar.gz
-        download "$PHISHING_14" feeds/phishing-14.tar.gz
+          echo "changed=$CHANGED" >> $GITHUB_ENV
 
-    - name: 📦 Extract Archives
-      run: |
-        mkdir -p extracted
-        for file in feeds/*.tar.gz; do
-          tar -xzf "$file" -C extracted/
-        done
+      - name: Abort if No Changes
+        if: env.changed == '0'
+        run: echo "✅ No changes detected. Skipping filtering and commit."
 
-    - name: 🚖 Organize and Standardize Extracted Lists
-      run: |
-        mkdir -p lists/{14-day,30-day}/{domains-only,high-entropy,phishing/domains-only}
-        cp extracted/rules/nrd-30day              lists/30-day/domains-only/nrd-30day.txt || true
-        cp extracted/rules/nrd-entropy-30day      lists/30-day/high-entropy/nrd-entropy-30day.txt || true
-        cp extracted/rules/nrd-phishing-30day     lists/30-day/phishing/domains-only/nrd-phishing-30day.txt || true
-        cp extracted/rules/nrd-14day              lists/14-day/domains-only/nrd-14day.txt || true
-        cp extracted/rules/nrd-entropy-14day      lists/14-day/high-entropy/nrd-entropy-14day.txt || true
-        cp extracted/rules/nrd-phishing-14day     lists/14-day/phishing/domains-only/nrd-phishing-14day.txt || true
+      - name: Apply TLD and Top-1M Filtering
+        if: env.changed != '0'
+        run: |
+          set -euo pipefail
 
-    - name: 🔐 Decode Base64 Lines in Standardized Lists (with Benchmark)
-      run: |
-        set -euo pipefail
-        for file in $(find lists -type f -name '*.txt'); do
-          if [ $(wc -l < "$file") -eq 0 ]; then
-            echo "⚠️ Skipping empty file: $file"
-            continue
+          curl -fsS -O https://data.iana.org/TLD/tlds-alpha-by-domain.txt
+          awk '{print tolower($0)}' tlds-alpha-by-domain.txt > iana-tlds.txt
+          for file in lists/*/*/*.txt; do
+            grep -vFxf iana-tlds.txt "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+          done
+
+          mkdir -p top1m
+
+          download_or_skip() {
+            name="$1"; url="$2"; output="$3"
+            echo "🌐 Downloading $name..."
+            if curl -fsSL --retry 3 --create-dirs -o "$output" "$url"; then
+              echo "✅ $name downloaded."
+            else
+              echo "⚠️ $name download failed: $url — continuing without it." >&2
+              touch "$output"
+            fi
+          }
+
+          download_or_skip "Umbrella"  "https://s3-us-west-1.amazonaws.com/umbrella-static/top-1m.csv.zip" "top1m/umbrella.zip"
+          download_or_skip "BuiltWith" "https://builtwith.com/dl/builtwith-top1m.zip" "top1m/builtwith.zip"
+          download_or_skip "Tranco"    "https://tranco-list.eu/download/daily/top-1m.csv.zip" "top1m/tranco.zip"
+
+          ls -lh top1m/*.zip || echo "📦 No zip files found to extract"
+
+          unzip -jo top1m/umbrella.zip '*.csv' -d top1m/ || true
+          unzip -jo top1m/builtwith.zip '*.csv' -d top1m/ || true
+          unzip -jo top1m/tranco.zip '*.csv' -d top1m/ || true
+
+          awk -F, '{print $2}' top1m/*umbrella*.csv > top1m/umbrella.txt || true
+          awk -F, '{print $2}' top1m/*builtwith*.csv > top1m/builtwith.txt || true
+          awk -F, '{print $2}' top1m/*tranco*.csv > top1m/tranco.txt || true
+
+          cat top1m/*.txt | sort -u > top1m-blocklist.txt || touch top1m-blocklist.txt
+
+          for file in lists/*/*/*.txt; do
+            grep -vFxf top1m-blocklist.txt "$file" > "$file.tmp" && mv "$file.tmp" "$file"
+          done
+
+          rm -rf top1m iana-tlds.txt tlds-alpha-by-domain.txt
+
+      - name: Split Large Files (>90MB)
+        if: env.changed != '0'
+        run: |
+          set -euo pipefail
+          threshold=$((90 * 1024 * 1024))
+          for file in $(find lists -name '*.txt'); do
+            size=$(stat -c%s "$file")
+            if [ "$size" -gt "$threshold" ]; then
+              echo "🚨 Splitting $file ($size bytes)"
+              split --bytes=80MB --numeric-suffixes=1 --additional-suffix=.part.txt "$file" "$file."
+              rm "$file"
+            fi
+          done
+
+      - name: Commit & Push Updates
+        if: env.changed != '0'
+        run: |
+          set -euo pipefail
+          git config user.name "KustoKing[bot]"
+          git config user.email "gianni@kustoking.com"
+          git add lists || true
+          ls hash/current_*.txt 2>/dev/null && git add hash/current_*.txt || true
+          if ! git diff --cached --quiet; then
+            git commit -m "ci: update NRD lists $(date +'%Y-%m-%d %H:%M')"
+            git push
+          else
+            echo "Nothing to commit."
           fi
-          echo "📜 Decoding $file ($(wc -l < "$file") lines)"
-          start=$(date +%s)
-          awk '{ print | "base64 -d 2>/dev/null" }' "$file" > "$file.decoded" || echo "⚠️ Warning: decoding failed for $file"
-          mv "$file.decoded" "$file"
-          end=$(date +%s)
-          echo "⏱️ Done in $((end - start))s"
-        done
 
-    - name: ⚖️ Compare File Hashes
-      run: |
-        mkdir -p hash
-        for file in $(find lists -type f -name '*.txt'); do
-          sha256sum "$file" | cut -d ' ' -f1 > "hash/current_$(basename "$file")"
-        done
-
-    - name: ❌ Abort if No Changes
-      run: |
-        if git diff --quiet --exit-code hash; then
-          echo "❌ No changes detected. Exiting."
-          exit 0
-        fi
-
-    - name: 🔎 Apply TLD and Top-1M Filtering
-      run: |
-        set -euo pipefail
-        curl -fsSLo iana-tlds.txt https://data.iana.org/TLD/tlds-alpha-by-domain.txt
-        awk '{print tolower($0)}' iana-tlds.txt > iana-tlds.tmp && mv iana-tlds.tmp iana-tlds.txt
-        for file in $(find lists -name '*.txt'); do
-          grep -vFxf iana-tlds.txt "$file" > "$file.tmp" && mv "$file.tmp" "$file"
-        done
-
-        mkdir -p top1m
-        curl -fsSLo top1m/umbrella.zip https://s3-us-west-1.amazonaws.com/umbrella-static/top-1m.csv.zip || true
-        curl -fsSLo top1m/tranco.zip https://tranco-list.eu/download/daily/top-1m.csv.zip || true
-
-        unzip -jo top1m/umbrella.zip '*.csv' -d top1m/ || true
-        unzip -jo top1m/tranco.zip '*.csv' -d top1m/ || true
-
-        awk -F, 'NR>1 && $2 ~ /^[a-zA-Z0-9.-]+$/ { print $2 }' top1m/*umbrella*.csv > top1m/umbrella.txt || true
-        awk -F, 'NR>1 && $2 ~ /^[a-zA-Z0-9.-]+$/ { print $2 }' top1m/*tranco*.csv > top1m/tranco.txt || true
-
-        cat top1m/umbrella.txt top1m/tranco.txt | sort -u > top1m-blocklist.txt || true
-        for file in $(find lists -name '*.txt'); do
-          grep -vFxf top1m-blocklist.txt "$file" > "$file.tmp" && mv "$file.tmp" "$file"
-        done
-
-    - name: 💥 Split Large Files (>90MB)
-      run: |
-        set -euo pipefail
-        threshold=$((90 * 1024 * 1024))
-        for file in $(find lists -name '*.txt'); do
-          size=$(stat -c%s "$file")
-          if [ "$size" -gt "$threshold" ]; then
-            echo "🚨 Splitting $file (${size}B)"
-            split --bytes=80MB --numeric-suffixes=1 --additional-suffix=.part.txt "$file" "$file."
-            rm "$file"
-            echo "🧹 Removed original: $file"
+      - name: Save Hashes for Next Run
+        if: env.changed != '0'
+        run: |
+          set -euo pipefail
+          for path in hash/current_*.txt; do
+            name=$(basename "$path")
+            mv "$path" "hash/previous_${name#current_}"
+          done
+          git add hash/previous_*.txt || true
+          if ! git diff --cached --quiet; then
+            git commit -m "ci: update saved hashes"
+            git push
+          else
+            echo "Hash files unchanged."
           fi
-        done
-
-    - name: 📋 Commit & Push Updates
-      run: |
-        set -euo pipefail
-        git config user.name "KustoKing[bot]"
-        git config user.email "gianni@kustoking.com"
-        git fetch origin
-        git stash --include-untracked || true
-        git rebase origin/main || git pull --rebase
-        git stash pop || true
-        git add lists hash || true
-        if ! git diff --cached --quiet; then
-          git commit -m "ci: update NRD lists $(date +'%Y-%m-%d %H:%M')"
-          git push
-        else
-          echo "❌ Nothing to commit."
-        fi
-
-    - name: 📂 Save Hashes for Next Run
-      run: |
-        mkdir -p hash
-        for file in $(find lists -type f -name '*.txt'); do
-          sha256sum "$file" | cut -d ' ' -f1 > "hash/current_$(basename "$file")"
-        done
-
-    - name: 📊 Summary & Metrics
-      run: |
-        echo "\n✨ Summary Report"
-        echo "========================="
-
-        echo "\n📅 Feed Modification Times:"
-        for f in feeds/*.timestamp; do
-          base=$(basename "$f" .timestamp)
-          printf "%s: %s\n" "$base" "$(cat $f)"
-        done
-
-        echo "\n📁 Feed Sizes:"
-        for f in feeds/*.tar.gz; do
-          [ -f "$f" ] && echo "$f: $(du -h "$f" | cut -f1)"
-        done
-
-        echo "\n🔍 Line Counts in Final Lists:"
-        find lists -type f -name '*.txt' | while read -r f; do
-          echo "$f: $(wc -l < "$f") lines"
-        done
-
-        echo "\n🔎 Top-1M Domains Blocked:"
-        echo "Top-1M Combined List: $(wc -l < top1m-blocklist.txt 2>/dev/null || echo 0) entries"
-        echo "TLDs Filtered: $(wc -l < iana-tlds.txt 2>/dev/null || echo 0) entries"
-        echo "========================="

@@ -37,9 +37,10 @@ jobs:
           local dest=$2
           local retries=3
           for i in $(seq 1 $retries); do
-            echo "➡️ Attempt $i to download $url"
+            echo "➔ Attempt $i to download $url"
             if curl -fsSLo "$dest" "$url"; then
               echo "✅ Downloaded $dest"
+              date -R -r "$dest" > "$dest.timestamp"
               return 0
             else
               echo "⚠️ Failed attempt $i for $url"
@@ -165,3 +166,29 @@ jobs:
         for file in $(find lists -type f -name '*.txt'); do
           sha256sum "$file" | cut -d ' ' -f1 > "hash/current_$(basename "$file")"
         done
+
+    - name: 📊 Summary & Metrics
+      run: |
+        echo "\n✨ Summary Report"
+        echo "========================="
+
+        echo "\n📅 Feed Modification Times:"
+        for f in feeds/*.timestamp; do
+          base=$(basename "$f" .timestamp)
+          printf "%s: %s\n" "$base" "$(cat $f)"
+        done
+
+        echo "\n📁 Feed Sizes:"
+        for f in feeds/*.tar.gz; do
+          [ -f "$f" ] && echo "$f: $(du -h "$f" | cut -f1)"
+        done
+
+        echo "\n🔍 Line Counts in Final Lists:"
+        find lists -type f -name '*.txt' | while read -r f; do
+          echo "$f: $(wc -l < "$f") lines"
+        done
+
+        echo "\n🔎 Top-1M Domains Blocked:"
+        echo "Top-1M Combined List: $(wc -l < top1m-blocklist.txt 2>/dev/null || echo 0) entries"
+        echo "TLDs Filtered: $(wc -l < iana-tlds.txt 2>/dev/null || echo 0) entries"
+        echo "========================="

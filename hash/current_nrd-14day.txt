@@ -1,1 +1,0 @@
-86bad4f8cb5f61e0b579a981546acceb04e02d2ecd51320cb68a1f96cad42bf2  lists/14-day/domains-only/nrd-14day.txt

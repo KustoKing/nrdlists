@@ -1,1 +1,0 @@
-676c706b4385b2e18f3d34e9de85e25c832928e54707f9737eb5e199892afd61  lists/30-day/domains-only/nrd-30day.txt

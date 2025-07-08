@@ -46,7 +46,7 @@ jobs:
           tar -xzf "$file" -C extracted/
         done
 
-    - name: 🖖️ Organize and Standardize Extracted Lists
+    - name: 🖖 Organize and Standardize Extracted Lists
       run: |
         mkdir -p lists/{14-day,30-day}/{domains-only,high-entropy,phishing/domains-only}
         cp extracted/rules/nrd-30day              lists/30-day/domains-only/nrd-30day.txt || true
@@ -56,20 +56,18 @@ jobs:
         cp extracted/rules/nrd-entropy-14day      lists/14-day/high-entropy/nrd-entropy-14day.txt || true
         cp extracted/rules/nrtd-phishing-14day    lists/14-day/phishing/domains-only/nrd-phishing-14day.txt || true
 
-    - name: 🔐 Decode Base64 Lines in Standardized Lists (with Benchmark)
+    - name: 🔐 Decode Base64 Lines in Standardized Lists
       run: |
         set -euo pipefail
         for file in $(find lists -type f -name '*.txt'); do
-          if [ $(wc -l < "$file") -eq 0 ]; then
+          lines=$(wc -l < "$file")
+          if [ "$lines" -eq 0 ]; then
             echo "⚠️ Skipping empty file: $file"
             continue
           fi
-          echo "📜 Decoding $file ($(wc -l < "$file") lines)"
-          start=$(date +%s)
-          awk '{ print | "base64 -d 2>/dev/null" }' "$file" > "$file.decoded" || echo "⚠️ Warning: decoding failed for $file"
+          echo "📜 Decoding $file ($lines lines)"
+          awk '{ system("echo " $0 " | base64 -d 2>/dev/null") }' "$file" > "$file.decoded" || echo "⚠️ Decoding failed for $file"
           mv "$file.decoded" "$file"
-          end=$(date +%s)
-          echo "⏱️ Done in $((end - start))s"
         done
 
     - name: ⚖️ Compare File Hashes
@@ -128,6 +126,8 @@ jobs:
         set -euo pipefail
         git config user.name "KustoKing[bot]"
         git config user.email "gianni@kustoking.com"
+        git fetch origin main
+        git pull --rebase
         git add lists hash || true
         if ! git diff --cached --quiet; then
           git commit -m "ci: update NRD lists $(date +'%Y-%m-%d %H:%M')"
@@ -142,4 +142,3 @@ jobs:
         for file in $(find lists -type f -name '*.txt'); do
           sha256sum "$file" | cut -d ' ' -f1 > "hash/current_$(basename "$file")"
         done
-

@@ -1,11 +1,3 @@
-# GitHub Actions Workflow: Automated NRD Domain List Updates and Publishing
-#
-# Fetches and processes domain lists from Stamus Networks Open-NRD, including high-entropy and phishing feeds.
-# Applies filtering using top-1M domain lists from Cisco Umbrella, BuiltWith, and Tranco.
-#
-# Domain feeds courtesy of Stamus Networks (https://www.stamus-networks.com/)
-# Licensed under GNU GPL v3 – https://www.gnu.org/licenses/gpl-3.0.html
-
 name: Update NRD List
 
 on:
@@ -32,7 +24,7 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y unzip
+          sudo apt-get install -y unzip curl
 
       - name: Download NRD, Entropy, and Phishing Feeds
         env:
@@ -60,12 +52,9 @@ jobs:
             tar -xzf "$f" -C extracted
           done
           rm -rf downloads
-          df -h .
 
       - name: Debug List extracted files
-        run: |
-          echo "Extracted files:"
-          find extracted -type f | sort
+        run: find extracted -type f | sort
 
       - name: Standardize and move NRD files
         run: |
@@ -73,6 +62,7 @@ jobs:
           mkdir -p lists/14-day/domains-only lists/30-day/domains-only
           mkdir -p lists/14-day/high-entropy lists/30-day/high-entropy
           mkdir -p lists/14-day_phishing/domains-only lists/30-day_phishing/domains-only
+
           move_if_exists() {
             src=$1
             dest=$2
@@ -83,14 +73,15 @@ jobs:
               echo "Warning: File $src does not exist."
             fi
           }
+
           move_if_exists extracted/rules/nrd-14day              lists/14-day/domains-only          nrd-14day
           move_if_exists extracted/rules/nrd-30day              lists/30-day/domains-only          nrd-30day
           move_if_exists extracted/rules/nrd-entropy-14day      lists/14-day/high-entropy          nrd-entropy-14day
           move_if_exists extracted/rules/nrd-entropy-30day      lists/30-day/high-entropy          nrd-entropy-30day
           move_if_exists extracted/rules/nrd-phishing-14day     lists/14-day_phishing/domains-only nrd-phishing-14day
           move_if_exists extracted/rules/nrd-phishing-30day     lists/30-day_phishing/domains-only nrd-phishing-30day
+
           rm -rf extracted
-          df -h .
 
       - name: Generate and compare hashes (or force if files missing)
         id: hash
@@ -99,14 +90,14 @@ jobs:
           mkdir -p hash
           CHANGED=0
           FILES_EXIST=1
-          for path in lists/14-day/domains-only/nrd-14day.txt lists/30-day/domains-only/nrd-30day.txt \
-                      lists/14-day/high-entropy/nrd-entropy-14day.txt lists/30-day/high-entropy/nrd-entropy-30day.txt \
-                      lists/14-day_phishing/domains-only/nrd-phishing-14day.txt lists/30-day_phishing/domains-only/nrd-phishing-30day.txt; do
+
+          for path in lists/*/*/*.txt; do
             if [ ! -f "$path" ]; then
               echo "Missing expected file: $path"
               FILES_EXIST=0
             fi
           done
+
           if [ "$FILES_EXIST" -eq 0 ]; then
             CHANGED=1
           else
@@ -119,6 +110,7 @@ jobs:
               fi
             done
           fi
+
           echo "changed=$CHANGED" >> $GITHUB_ENV
 
       - name: Abort if no input changes detected
@@ -129,6 +121,7 @@ jobs:
         if: env.changed != '0'
         run: |
           set -euo pipefail
+
           curl -fsS -O https://data.iana.org/TLD/tlds-alpha-by-domain.txt
           awk '{print tolower($0)}' tlds-alpha-by-domain.txt > iana-tlds.txt
           for file in lists/*/*/*.txt; do
@@ -137,23 +130,18 @@ jobs:
 
           mkdir -p top1m
 
-          # Umbrella
-          curl -fsS -o top1m/umbrella.zip "https://s3-us-west-1.amazonaws.com/umbrella-static/top-1m.csv.zip"
-          unzip -jo top1m/umbrella.zip '*.csv' -d top1m/
-          awk -F, '{print $2}' top1m/top-1m.csv > top1m/umbrella.txt
-          rm -f top1m/umbrella.zip top1m/top-1m.csv
+          echo "Downloading Top-1M lists..."
+          curl -fsS -o top1m/umbrella.zip "https://s3-us-west-1.amazonaws.com/umbrella-static/top-1m.csv.zip" || { echo "Failed to download Umbrella."; exit 1; }
+          curl -fsS -o top1m/builtwith.zip "https://builtwith.com/dl/builtwith-top1m.zip" || { echo "Failed to download BuiltWith."; exit 1; }
+          curl -fsS -o top1m/tranco.zip "https://tranco-list.eu/download/daily/top-1m.csv.zip" || { echo "Failed to download Tranco."; exit 1; }
 
-          # BuiltWith
-          curl -fsS -o top1m/builtwith.zip "https://builtwith.com/dl/builtwith-top1m.zip"
-          unzip -jo top1m/builtwith.zip '*.csv' -d top1m/
-          awk -F, '{print $2}' top1m/builtwith-top1m-*.csv > top1m/builtwith.txt
-          rm -f top1m/builtwith.zip top1m/builtwith-top1m-*.csv
+          unzip -jo top1m/umbrella.zip '*.csv' -d top1m/ || exit 1
+          unzip -jo top1m/builtwith.zip '*.csv' -d top1m/ || exit 1
+          unzip -jo top1m/tranco.zip '*.csv' -d top1m/ || exit 1
 
-          # Tranco
-          curl -fsS -o top1m/tranco.zip "https://tranco-list.eu/download/daily/top-1m.csv.zip"
-          unzip -jo top1m/tranco.zip '*.csv' -d top1m/
-          awk -F, '{print $2}' top1m/top-1m.csv > top1m/tranco.txt
-          rm -f top1m/tranco.zip top1m/top-1m.csv
+          awk -F, '{print $2}' top1m/*umbrella*.csv > top1m/umbrella.txt || true
+          awk -F, '{print $2}' top1m/*builtwith*.csv > top1m/builtwith.txt || true
+          awk -F, '{print $2}' top1m/*tranco*.csv > top1m/tranco.txt || true
 
           cat top1m/umbrella.txt top1m/builtwith.txt top1m/tranco.txt | sort -u > top1m-blocklist.txt
 
@@ -162,7 +150,6 @@ jobs:
           done
 
           rm -rf top1m iana-tlds.txt tlds-alpha-by-domain.txt
-          df -h .
 
       - name: Commit & push updates
         if: env.changed != '0'

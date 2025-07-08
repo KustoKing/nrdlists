@@ -142,3 +142,4 @@ jobs:
         for file in $(find lists -type f -name '*.txt'); do
           sha256sum "$file" | cut -d ' ' -f1 > "hash/current_$(basename "$file")"
         done
+

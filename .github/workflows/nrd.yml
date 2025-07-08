@@ -123,9 +123,11 @@ jobs:
           download_or_skip() {
             name="$1"; url="$2"; output="$3"
             echo "🌐 Downloading $name..."
-            if ! curl -fsSL --retry 3 --create-dirs -o "$output" "$url"; then
-              echo "⚠️ $name download failed: $url" >&2
-              return 1
+            if curl -fsSL --retry 3 --create-dirs -o "$output" "$url"; then
+              echo "✅ $name downloaded."
+            else
+              echo "⚠️ $name download failed: $url — continuing without it." >&2
+              touch "$output"  # Prevent unzip failure
             fi
           }
 
@@ -135,6 +137,7 @@ jobs:
           download_or_skip "Tranco" "https://tranco-list.eu/download/daily/top-1m.csv.zip" "top1m/tranco.zip"
 
           # Extract CSVs
+          ls -lh top1m/*.zip || echo "📦 No zip files found to extract"
           unzip -jo top1m/umbrella.zip '*.csv' -d top1m/ || true
           unzip -jo top1m/builtwith.zip '*.csv' -d top1m/ || true
           unzip -jo top1m/tranco.zip '*.csv' -d top1m/ || true

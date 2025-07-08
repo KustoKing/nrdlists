@@ -59,6 +59,8 @@ jobs:
           for f in downloads/*.tar.gz; do
             tar -xzf "$f" -C extracted
           done
+          rm -rf downloads
+          df -h .
 
       - name: Debug List extracted files
         run: |
@@ -87,6 +89,8 @@ jobs:
           move_if_exists extracted/rules/nrd-entropy-30day      lists/30-day/high-entropy          nrd-entropy-30day
           move_if_exists extracted/rules/nrd-phishing-14day     lists/14-day_phishing/domains-only nrd-phishing-14day
           move_if_exists extracted/rules/nrd-phishing-30day     lists/30-day_phishing/domains-only nrd-phishing-30day
+          rm -rf extracted
+          df -h .
 
       - name: Generate and compare hashes (or force if files missing)
         id: hash
@@ -125,31 +129,32 @@ jobs:
         if: env.changed != '0'
         run: |
           set -euo pipefail
-          # Download IANA TLD list
           curl -fsS -O https://data.iana.org/TLD/tlds-alpha-by-domain.txt
           awk '{print tolower($0)}' tlds-alpha-by-domain.txt > iana-tlds.txt
           for file in lists/*/*/*.txt; do
             grep -vFxf iana-tlds.txt "$file" > "$file.tmp" && mv "$file.tmp" "$file"
           done
 
-          # Download and combine Top-1M blocklist sources
+          mkdir -p top1m
 
           # Umbrella
           curl -fsS -o top1m/umbrella.zip "https://s3-us-west-1.amazonaws.com/umbrella-static/top-1m.csv.zip"
           unzip -jo top1m/umbrella.zip '*.csv' -d top1m/
           awk -F, '{print $2}' top1m/top-1m.csv > top1m/umbrella.txt
+          rm -f top1m/umbrella.zip top1m/top-1m.csv
 
           # BuiltWith
           curl -fsS -o top1m/builtwith.zip "https://builtwith.com/dl/builtwith-top1m.zip"
           unzip -jo top1m/builtwith.zip '*.csv' -d top1m/
           awk -F, '{print $2}' top1m/builtwith-top1m-*.csv > top1m/builtwith.txt
+          rm -f top1m/builtwith.zip top1m/builtwith-top1m-*.csv
 
           # Tranco
           curl -fsS -o top1m/tranco.zip "https://tranco-list.eu/download/daily/top-1m.csv.zip"
           unzip -jo top1m/tranco.zip '*.csv' -d top1m/
           awk -F, '{print $2}' top1m/top-1m.csv > top1m/tranco.txt
+          rm -f top1m/tranco.zip top1m/top-1m.csv
 
-          # Merge & deduplicate
           cat top1m/umbrella.txt top1m/builtwith.txt top1m/tranco.txt | sort -u > top1m-blocklist.txt
 
           for file in lists/*/*/*.txt; do
@@ -157,6 +162,7 @@ jobs:
           done
 
           rm -rf top1m iana-tlds.txt tlds-alpha-by-domain.txt
+          df -h .
 
       - name: Commit & push updates
         if: env.changed != '0'

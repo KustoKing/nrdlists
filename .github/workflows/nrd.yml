@@ -2,7 +2,7 @@ name: Update NRD List
 
 on:
   schedule:
-    - cron: "10 1,3,5,7,9,11,13,15,17,19,21,23 * * *"
+    - cron: "10 1,3,5,7,9,11,13,15,17,19,21,23 * * *"  # Every 2 hours, 10 minutes past
   workflow_dispatch:
 
 permissions:
@@ -17,16 +17,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repo
+      - name: 🧾 Checkout Repository
         uses: actions/checkout@v3
 
-      - name: Set up system dependencies
+      - name: 🛠️ Install Dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
           sudo apt-get install -y unzip curl
 
-      - name: Download NRD, Entropy, and Phishing Feeds
+      - name: 📥 Download NRD, Entropy, and Phishing Feeds
         env:
           STAMUS_NRD_30_URL: ${{ secrets.STAMUS_NRD_30_URL }}
           STAMUS_ENTROPY_30_URL: ${{ secrets.STAMUS_ENTROPY_30_URL }}
@@ -44,7 +44,7 @@ jobs:
           curl -fsS -o downloads/entropy-14.tar.gz "$STAMUS_ENTROPY_14_URL"
           curl -fsS -o downloads/phishing-14.tar.gz "$STAMUS_PHISHING_14_URL"
 
-      - name: Extract downloaded archives
+      - name: 📦 Extract Archives
         run: |
           set -euo pipefail
           mkdir -p extracted
@@ -53,10 +53,10 @@ jobs:
           done
           rm -rf downloads
 
-      - name: Debug List extracted files
+      - name: 🐾 Debug Extracted Files
         run: find extracted -type f | sort
 
-      - name: Standardize and move NRD files
+      - name: 🧹 Normalize and Organize Extracted Lists
         run: |
           set -euo pipefail
           mkdir -p lists/14-day/domains-only lists/30-day/domains-only
@@ -64,13 +64,11 @@ jobs:
           mkdir -p lists/14-day_phishing/domains-only lists/30-day_phishing/domains-only
 
           move_if_exists() {
-            src=$1
-            dest=$2
-            name=$3
-            if [ -f "$src" ]; then
+            src=$1; dest=$2; name=$3
+            if [[ -f "$src" ]]; then
               cp "$src" "$dest/$name.txt"
             else
-              echo "Warning: File $src does not exist."
+              echo "⚠️ Warning: $src not found"
             fi
           }
 
@@ -83,75 +81,78 @@ jobs:
 
           rm -rf extracted
 
-      - name: Generate and compare hashes (or force if files missing)
-        id: hash
+      - name: 🔍 Compare Hashes
+        id: hashcheck
         run: |
           set -euo pipefail
           mkdir -p hash
           CHANGED=0
-          FILES_EXIST=1
 
           for path in lists/*/*/*.txt; do
-            if [ ! -f "$path" ]; then
-              echo "Missing expected file: $path"
-              FILES_EXIST=0
+            [ -f "$path" ] || { echo "❌ Missing: $path"; CHANGED=1; continue; }
+            name=$(basename "$path" .txt)
+            sha256sum "$path" > "hash/current_$name.txt"
+            if [[ ! -f "hash/previous_$name.txt" ]] || ! cmp -s "hash/previous_$name.txt" "hash/current_$name.txt"; then
+              echo "➕ Changed: $name"
+              CHANGED=1
             fi
           done
 
-          if [ "$FILES_EXIST" -eq 0 ]; then
-            CHANGED=1
-          else
-            for path in lists/*/*/*.txt; do
-              name=$(basename "$path" .txt)
-              sha256sum "$path" > "hash/current_$name.txt"
-              if [ ! -f "hash/previous_$name.txt" ] || ! cmp -s "hash/previous_$name.txt" "hash/current_$name.txt"; then
-                echo "$name changed"
-                CHANGED=1
-              fi
-            done
-          fi
-
           echo "changed=$CHANGED" >> $GITHUB_ENV
 
-      - name: Abort if no input changes detected
+      - name: 🛑 Abort if No Changes
         if: env.changed == '0'
-        run: echo "No changes detected. Exiting early."
+        run: echo "✅ No changes detected. Skipping filtering and commit."
 
-      - name: Apply TLD and Top-1M domain filtering
+      - name: 🧽 Apply TLD & Top-1M Filtering
         if: env.changed != '0'
         run: |
           set -euo pipefail
 
+          # Filter by valid IANA TLDs
           curl -fsS -O https://data.iana.org/TLD/tlds-alpha-by-domain.txt
           awk '{print tolower($0)}' tlds-alpha-by-domain.txt > iana-tlds.txt
           for file in lists/*/*/*.txt; do
             grep -vFxf iana-tlds.txt "$file" > "$file.tmp" && mv "$file.tmp" "$file"
           done
 
+          # Create folder
           mkdir -p top1m
 
-          echo "Downloading Top-1M lists..."
-          curl -fsS -o top1m/umbrella.zip "https://s3-us-west-1.amazonaws.com/umbrella-static/top-1m.csv.zip" || { echo "Failed to download Umbrella."; exit 1; }
-          curl -fsS -o top1m/builtwith.zip "https://builtwith.com/dl/builtwith-top1m.zip" || { echo "Failed to download BuiltWith."; exit 1; }
-          curl -fsS -o top1m/tranco.zip "https://tranco-list.eu/download/daily/top-1m.csv.zip" || { echo "Failed to download Tranco."; exit 1; }
+          # Define function
+          download_or_skip() {
+            name="$1"; url="$2"; output="$3"
+            echo "🌐 Downloading $name..."
+            if ! curl -fsSL --retry 3 --create-dirs -o "$output" "$url"; then
+              echo "⚠️ $name download failed: $url" >&2
+              return 1
+            fi
+          }
 
-          unzip -jo top1m/umbrella.zip '*.csv' -d top1m/ || exit 1
-          unzip -jo top1m/builtwith.zip '*.csv' -d top1m/ || exit 1
-          unzip -jo top1m/tranco.zip '*.csv' -d top1m/ || exit 1
+          # Download zip sources
+          download_or_skip "Umbrella" "https://s3-us-west-1.amazonaws.com/umbrella-static/top-1m.csv.zip" "top1m/umbrella.zip"
+          download_or_skip "BuiltWith" "https://builtwith.com/dl/builtwith-top1m.zip" "top1m/builtwith.zip"
+          download_or_skip "Tranco" "https://tranco-list.eu/download/daily/top-1m.csv.zip" "top1m/tranco.zip"
 
+          # Extract CSVs
+          unzip -jo top1m/umbrella.zip '*.csv' -d top1m/ || true
+          unzip -jo top1m/builtwith.zip '*.csv' -d top1m/ || true
+          unzip -jo top1m/tranco.zip '*.csv' -d top1m/ || true
+
+          # Extract domains
           awk -F, '{print $2}' top1m/*umbrella*.csv > top1m/umbrella.txt || true
           awk -F, '{print $2}' top1m/*builtwith*.csv > top1m/builtwith.txt || true
           awk -F, '{print $2}' top1m/*tranco*.csv > top1m/tranco.txt || true
 
-          cat top1m/umbrella.txt top1m/builtwith.txt top1m/tranco.txt | sort -u > top1m-blocklist.txt
-
+          # Merge and filter
+          cat top1m/*.txt | sort -u > top1m-blocklist.txt || touch top1m-blocklist.txt
           for file in lists/*/*/*.txt; do
             grep -vFxf top1m-blocklist.txt "$file" > "$file.tmp" && mv "$file.tmp" "$file"
           done
 
           rm -rf top1m iana-tlds.txt tlds-alpha-by-domain.txt
 
-      - name: Commit & push updates
+      - name: 🚀 Commit & Push Updates
         if: env.changed != '0'
         run: |
           set -euo pipefail
@@ -160,14 +161,13 @@ jobs:
           git add lists || true
           ls hash/current_*.txt 2>/dev/null && git add hash/current_*.txt || true
           if ! git diff --cached --quiet; then
-            DATE=$(date +'%Y%m%d')
-            git commit -m "ci: update NRD lists $DATE"
+            git commit -m "ci: update NRD lists $(date +'%Y-%m-%d %H:%M')"
             git push
           else
-            echo "No changes to commit."
+            echo "Nothing to commit."
           fi
 
-      - name: Save hashes for next run
+      - name: 💾 Save Hashes for Next Run
         if: env.changed != '0'
         run: |
           set -euo pipefail
@@ -177,8 +177,8 @@ jobs:
           done
           git add hash/previous_*.txt || true
           if ! git diff --cached --quiet; then
-            git commit -m "ci: save hashes for next run"
+            git commit -m "ci: update saved hashes"
             git push
           else
-            echo "No hash changes to commit."
+            echo "Hash files unchanged."
           fi

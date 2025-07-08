@@ -1,8 +1,8 @@
 # GitHub Actions Workflow: Automated NRD Domain List Updates and Publishing
 #
-# This workflow fetches and processes domain lists from Stamus Networks Open-NRD,
-# including "high entropy" and phishing domain feeds, as described at:
-#   https://www.stamus-networks.com/blog/introducing-open-nrd#install
+# Fetches and processes domain lists from Stamus Networks Open-NRD, including high-entropy and phishing feeds.
+# Also applies filtering using top-1M domain lists from Cisco Umbrella, BuiltWith, and Tranco.
+# By Gianni Castaldi & ChatGPT – Professional Edition
 #
 # Domain feeds courtesy of Stamus Networks (https://www.stamus-networks.com/)
 # Licensed under GNU GPL v3 – https://www.gnu.org/licenses/gpl-3.0.html
@@ -66,7 +66,33 @@ jobs:
       - name: Debug List extracted files
         run: |
           echo "Extracted files:"
-          ls -l extracted || true
+          find extracted -type f | sort
+
+      - name: Standardize and move NRD files
+        run: |
+          set -euo pipefail
+          # Create output directories
+          mkdir -p lists/14-day/domains-only lists/30-day/domains-only
+          mkdir -p lists/14-day/high-entropy lists/30-day/high-entropy
+          mkdir -p lists/14-day_phishing/domains-only lists/30-day_phishing/domains-only
+
+          # Move and rename, always to .txt for consistency
+          move_if_exists() {
+            src=$1
+            dest=$2
+            name=$3
+            if [ -f "$src" ]; then
+              cp "$src" "$dest/$name.txt"
+            else
+              echo "Warning: File $src does not exist."
+            fi
+          }
+          move_if_exists extracted/rules/nrd-14day              lists/14-day/domains-only          nrd-14day
+          move_if_exists extracted/rules/nrd-30day              lists/30-day/domains-only          nrd-30day
+          move_if_exists extracted/rules/nrd-entropy-14day      lists/14-day/high-entropy          nrd-entropy-14day
+          move_if_exists extracted/rules/nrd-entropy-30day      lists/30-day/high-entropy          nrd-entropy-30day
+          move_if_exists extracted/rules/nrd-phishing-14day     lists/14-day_phishing/domains-only nrd-phishing-14day
+          move_if_exists extracted/rules/nrd-phishing-30day     lists/30-day_phishing/domains-only nrd-phishing-30day
 
       - name: Generate and compare hashes (or force if files missing)
         id: hash
@@ -75,24 +101,23 @@ jobs:
           mkdir -p hash
           CHANGED=0
           FILES_EXIST=1
-          for file in nrd-30 entropy-30 phishing-30 nrd-14 entropy-14 phishing-14; do
-            fpath=$(ls extracted/$file*.txt 2>/dev/null | head -n 1 || true)
-            if [ ! -f "$fpath" ]; then
-              echo "$file missing, will force processing"
+          for path in lists/14-day/domains-only/nrd-14day.txt lists/30-day/domains-only/nrd-30day.txt \
+                      lists/14-day/high-entropy/nrd-entropy-14day.txt lists/30-day/high-entropy/nrd-entropy-30day.txt \
+                      lists/14-day_phishing/domains-only/nrd-phishing-14day.txt lists/30-day_phishing/domains-only/nrd-phishing-30day.txt; do
+            if [ ! -f "$path" ]; then
+              echo "Missing expected file: $path"
               FILES_EXIST=0
             fi
           done
           if [ "$FILES_EXIST" -eq 0 ]; then
             CHANGED=1
           else
-            for file in nrd-30 entropy-30 phishing-30 nrd-14 entropy-14 phishing-14; do
-              fpath=$(ls extracted/$file*.txt 2>/dev/null | head -n 1 || true)
-              if [ -n "$fpath" ]; then
-                sha256sum "$fpath" > "hash/current_$file.txt"
-                if [ ! -f "hash/previous_$file.txt" ] || ! cmp -s "hash/previous_$file.txt" "hash/current_$file.txt"; then
-                  echo "$file changed"
-                  CHANGED=1
-                fi
+            for path in lists/*/*/*.txt; do
+              name=$(basename "$path" .txt)
+              sha256sum "$path" > "hash/current_$name.txt"
+              if [ ! -f "hash/previous_$name.txt" ] || ! cmp -s "hash/previous_$name.txt" "hash/current_$name.txt"; then
+                echo "$name changed"
+                CHANGED=1
               fi
             done
           fi
@@ -106,59 +131,37 @@ jobs:
         if: env.changed != '0'
         run: |
           set -euo pipefail
-          # TLD filtering
+          # Download IANA TLD list
           curl -fsS -O https://data.iana.org/TLD/tlds-alpha-by-domain.txt
           awk '{print tolower($0)}' tlds-alpha-by-domain.txt > iana-tlds.txt
-          for file in extracted/*.txt; do
+          # TLD filter on all NRD output files
+          for file in lists/*/*/*.txt; do
             grep -vFxf iana-tlds.txt "$file" > "$file.tmp" && mv "$file.tmp" "$file"
           done
 
-          # Top-1M filtering
+          # Download and combine Top-1M blocklist sources
           mkdir -p top1m
 
-          # Cisco Umbrella
           curl -fsS -o top1m/umbrella.zip "https://s3-us-west-1.amazonaws.com/umbrella-static/top-1m.csv.zip"
           unzip -jo top1m/umbrella.zip '*.csv' -d top1m/
-          awk -F, '{print $2}' top1m/*.csv > top1m/umbrella.txt
+          awk -F, '{print $2}' top1m/top-1m.csv > top1m/umbrella.txt
 
-          # BuiltWith
           curl -fsS -o top1m/builtwith.zip "https://builtwith.com/dl/builtwith-top1m.zip"
           unzip -jo top1m/builtwith.zip '*.csv' -d top1m/
-          awk -F, '{print $2}' top1m/*.csv > top1m/builtwith.txt
+          awk -F, '{print $2}' top1m/builtwith-top1m-*.csv > top1m/builtwith.txt
 
-          # Tranco
           curl -fsS -o top1m/tranco.zip "https://tranco-list.eu/download/daily/top-1m.csv.zip"
           unzip -jo top1m/tranco.zip '*.csv' -d top1m/
-          awk -F, '{print $2}' top1m/*.csv > top1m/tranco.txt
+          awk -F, '{print $2}' top1m/top-1m.csv > top1m/tranco.txt
 
-          # Combine and deduplicate
+          # Merge & deduplicate
           cat top1m/umbrella.txt top1m/builtwith.txt top1m/tranco.txt | sort -u > top1m-blocklist.txt
-          for file in extracted/*.txt; do
+
+          for file in lists/*/*/*.txt; do
             grep -vFxf top1m-blocklist.txt "$file" > "$file.tmp" && mv "$file.tmp" "$file"
           done
-          rm -rf top1m iana-tlds.txt tlds-alpha-by-domain.txt
 
-      - name: Move outputs to final locations
-        if: env.changed != '0'
-        run: |
-          set -euo pipefail
-          move_if_exists() {
-            src=$1
-            dest=$2
-            mkdir -p "$dest"
-            if [ -f "$src" ]; then
-              mv "$src" "$dest"
-            else
-              echo "Warning: File $src does not exist."
-            fi
-          }
-          move_if_exists extracted/nrd-14.txt lists/14-day/domains-only/
-          move_if_exists extracted/nrd-30.txt lists/30-day/domains-only/
-          move_if_exists extracted/entropy-14.txt lists/14-day/high-entropy/
-          move_if_exists extracted/entropy-30.txt lists/30-day/high-entropy/
-          move_if_exists extracted/phishing-14.txt lists/14-day_phishing/domains-only/
-          move_if_exists extracted/phishing-30.txt lists/30-day_phishing/domains-only/
-          # ... Add other output formats as needed
+          rm -rf top1m iana-tlds.txt tlds-alpha-by-domain.txt
 
       - name: Commit & push updates
         if: env.changed != '0'
@@ -166,7 +169,8 @@ jobs:
           set -euo pipefail
           git config user.name "KustoKing[bot]"
           git config user.email "gianni@kustoking.com"
-          git add lists hash/current_*.txt
+          git add lists || true
+          ls hash/current_*.txt 2>/dev/null && git add hash/current_*.txt || true
           if ! git diff --cached --quiet; then
             DATE=$(date +'%Y%m%d')
             git commit -m "ci: update NRD lists $DATE"
@@ -179,13 +183,11 @@ jobs:
         if: env.changed != '0'
         run: |
           set -euo pipefail
-          for file in nrd-30 entropy-30 phishing-30 nrd-14 entropy-14 phishing-14; do
-            fpath="hash/current_$file.txt"
-            if [ -f "$fpath" ]; then
-              mv "$fpath" "hash/previous_$file.txt"
-            fi
+          for path in hash/current_*.txt; do
+            name=$(basename "$path")
+            mv "$path" "hash/previous_${name#current_}"
           done
-          git add hash/previous_*.txt
+          git add hash/previous_*.txt || true
           if ! git diff --cached --quiet; then
             git commit -m "ci: save hashes for next run"
             git push

@@ -2,7 +2,7 @@ name: Update NRD List
 
 on:
   schedule:
-    - cron: "7 */2 * * *"
+    - cron: "7 */2 * * *"  # Every 2 hours at 07 minutes past
   workflow_dispatch:
 
 permissions:
@@ -17,14 +17,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: 🧾 Checkout Repository
+      - name: 📋 Checkout Repository
         uses: actions/checkout@v3
 
       - name: 🛠️ Install Dependencies
         run: |
           set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y unzip curl
+          sudo apt-get install -y unzip curl coreutils
 
       - name: 📥 Download NRD, Entropy, and Phishing Feeds
         env:
@@ -53,7 +53,7 @@ jobs:
           done
           rm -rf downloads
 
-      - name: 🧹 Organize Extracted Files
+      - name: 📡 Organize and Standardize Extracted Lists
         run: |
           set -euo pipefail
           mkdir -p lists/14-day/domains-only lists/30-day/domains-only
@@ -78,7 +78,20 @@ jobs:
 
           rm -rf extracted
 
-      - name: 🔍 Compare Hashes
+      - name: 🔐 Decode Base64-Encoded Lines
+        run: |
+          set -euo pipefail
+          for file in $(find lists -name '*.txt'); do
+            echo "📅 Decoding Base64 in $file"
+            base64 -d < "$file" > "$file.decoded" 2>/dev/null || {
+              echo "❌ Failed to decode $file. Skipping."
+              rm -f "$file.decoded"
+              continue
+            }
+            mv "$file.decoded" "$file"
+          done
+
+      - name: 🔍 Compare File Hashes
         id: hashcheck
         run: |
           set -euo pipefail
@@ -97,11 +110,11 @@ jobs:
 
           echo "changed=$CHANGED" >> $GITHUB_ENV
 
-      - name: 🛑 Abort if No Changes
+      - name: ❌ Abort if No Changes
         if: env.changed == '0'
-        run: echo "✅ No changes detected. Skipping filtering and commit."
+        run: echo "No changes detected. Workflow exiting."
 
-      - name: 🧽 Apply TLD and Top-1M Filtering
+      - name: 🪤 Apply TLD and Top-1M Filtering
         if: env.changed != '0'
         run: |
           set -euo pipefail
@@ -120,7 +133,7 @@ jobs:
             if curl -fsSL --retry 3 --create-dirs -o "$output" "$url"; then
               echo "✅ $name downloaded."
             else
-              echo "⚠️ $name download failed: $url — continuing without it." >&2
+              echo "⚠️ $name download failed: $url"
               touch "$output"
             fi
           }
@@ -129,7 +142,7 @@ jobs:
           download_or_skip "BuiltWith" "https://builtwith.com/dl/builtwith-top1m.zip" "top1m/builtwith.zip"
           download_or_skip "Tranco"    "https://tranco-list.eu/download/daily/top-1m.csv.zip" "top1m/tranco.zip"
 
-          ls -lh top1m/*.zip || echo "📦 No zip files found to extract"
+          ls -lh top1m/*.zip || echo "📆 No zip files to extract"
 
           unzip -jo top1m/umbrella.zip '*.csv' -d top1m/ || true
           unzip -jo top1m/builtwith.zip '*.csv' -d top1m/ || true
@@ -147,7 +160,7 @@ jobs:
 
           rm -rf top1m iana-tlds.txt tlds-alpha-by-domain.txt
 
-      - name: 🧨 Split Large Files (>90MB)
+      - name: 💥 Split Large Files (>90MB)
         if: env.changed != '0'
         run: |
           set -euo pipefail

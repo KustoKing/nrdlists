@@ -1,4 +1,13 @@
 # GitHub Actions Workflow: Automated NRD Domain List Updates and Publishing
+#
+# This workflow fetches and processes domain lists from Stamus Networks Open-NRD,
+# including "high entropy" and phishing domain feeds, as described at:
+#   https://www.stamus-networks.com/blog/introducing-open-nrd#install
+#
+# Domain feeds courtesy of Stamus Networks (https://www.stamus-networks.com/)
+# Licensed under GNU GPL v3 – https://www.gnu.org/licenses/gpl-3.0.html
+#
+# If you reuse or adapt this workflow, please retain this notice and attribution.
 
 name: Update NRD List
 
@@ -8,14 +17,14 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write         # Needed to commit changes
+  contents: write
 
 concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: true
 
 jobs:
-  update-hunter-lists:
+  update-nrd-list:
     runs-on: ubuntu-latest
 
     steps:
@@ -29,22 +38,31 @@ jobs:
           sudo apt-get install -y unzip
           pip install --upgrade pip requests matplotlib tldextract
 
-      - name: Download feeds
+      - name: Download NRD, Entropy, and Phishing Feeds
         env:
-          NORDOMAIN_30DAY_URL: ${{ secrets.NORDOMAIN_30DAY_URL }}
-          NORDOMAIN_14DAY_URL: ${{ secrets.NORDOMAIN_14DAY_URL }}
-          PHISHING_30DAY_URL: ${{ secrets.PHISHING_30DAY_URL }}
-          PHISHING_14DAY_URL: ${{ secrets.PHISHING_14DAY_URL }}
-          ADDITIONAL_SOURCE_URL: ${{ secrets.ADDITIONAL_SOURCE_URL }}
-          USER_AGENT: ${{ secrets.USER_AGENT }}
+          STAMUS_NRD_30_URL: ${{ secrets.STAMUS_NRD_30_URL }}
+          STAMUS_ENTROPY_30_URL: ${{ secrets.STAMUS_ENTROPY_30_URL }}
+          STAMUS_PHISHING_30_URL: ${{ secrets.STAMUS_PHISHING_30_URL }}
+          STAMUS_NRD_14_URL: ${{ secrets.STAMUS_NRD_14_URL }}
+          STAMUS_ENTROPY_14_URL: ${{ secrets.STAMUS_ENTROPY_14_URL }}
+          STAMUS_PHISHING_14_URL: ${{ secrets.STAMUS_PHISHING_14_URL }}
         run: |
           set -euo pipefail
           mkdir -p downloads
-          curl -fsS -o downloads/nordomain_30day.txt "$NORDOMAIN_30DAY_URL"
-          curl -fsS -o downloads/nordomain_14day.txt "$NORDOMAIN_14DAY_URL"
-          curl -fsS -o downloads/phishing_30day.txt "$PHISHING_30DAY_URL"
-          curl -fsS -o downloads/phishing_14day.txt "$PHISHING_14DAY_URL"
-          curl -fsS -A "$USER_AGENT" -o downloads/additional.txt "$ADDITIONAL_SOURCE_URL"
+          curl -fsS -o downloads/nrd-30.tar.gz "$STAMUS_NRD_30_URL"
+          curl -fsS -o downloads/entropy-30.tar.gz "$STAMUS_ENTROPY_30_URL"
+          curl -fsS -o downloads/phishing-30.tar.gz "$STAMUS_PHISHING_30_URL"
+          curl -fsS -o downloads/nrd-14.tar.gz "$STAMUS_NRD_14_URL"
+          curl -fsS -o downloads/entropy-14.tar.gz "$STAMUS_ENTROPY_14_URL"
+          curl -fsS -o downloads/phishing-14.tar.gz "$STAMUS_PHISHING_14_URL"
+
+      - name: Extract downloaded archives
+        run: |
+          set -euo pipefail
+          mkdir -p extracted
+          for f in downloads/*.tar.gz; do
+            tar -xzf "$f" -C extracted
+          done
 
       - name: Generate and compare hashes
         id: hash
@@ -52,11 +70,15 @@ jobs:
           set -euo pipefail
           mkdir -p hash
           CHANGED=0
-          for file in nordomain_30day nordomain_14day phishing_30day phishing_14day additional; do
-            sha256sum "downloads/$file.txt" > "hash/current_$file.txt"
-            if [ ! -f "hash/previous_$file.txt" ] || ! cmp -s "hash/previous_$file.txt" "hash/current_$file.txt"; then
-              echo "$file changed"
-              CHANGED=1
+          for file in nrd-30 entropy-30 phishing-30 nrd-14 entropy-14 phishing-14; do
+            # Use only the first .txt file per type for simplicity; adjust if more
+            fpath=$(ls extracted/$file*.txt 2>/dev/null | head -n 1 || true)
+            if [ -n "$fpath" ]; then
+              sha256sum "$fpath" > "hash/current_$file.txt"
+              if [ ! -f "hash/previous_$file.txt" ] || ! cmp -s "hash/previous_$file.txt" "hash/current_$file.txt"; then
+                echo "$file changed"
+                CHANGED=1
+              fi
             fi
           done
           echo "changed=$CHANGED" >> $GITHUB_ENV
@@ -68,28 +90,21 @@ jobs:
       # --- Only runs if something changed ---
       - name: Run main list processing
         if: env.changed != '0'
-        env:
-          NORDOMAIN_30DAY_URL: ${{ secrets.NORDOMAIN_30DAY_URL }}
-          NORDOMAIN_14DAY_URL: ${{ secrets.NORDOMAIN_14DAY_URL }}
-          PHISHING_30DAY_URL: ${{ secrets.PHISHING_30DAY_URL }}
-          PHISHING_14DAY_URL: ${{ secrets.PHISHING_14DAY_URL }}
-          ADDITIONAL_SOURCE_URL: ${{ secrets.ADDITIONAL_SOURCE_URL }}
-          USER_AGENT: ${{ secrets.USER_AGENT }}
         run: |
           set -euo pipefail
+          # You may need to adjust the input location if your script expects certain files
           python3 src/nrd-hunter.py
 
       - name: Apply TLD and Top-1M domain filtering
         if: env.changed != '0'
         run: |
           set -euo pipefail
-          # TLD filtering
           curl -fsS -O https://data.iana.org/TLD/tlds-alpha-by-domain.txt
           awk '{print tolower($0)}' tlds-alpha-by-domain.txt > iana-tlds.txt
           for file in output/*.txt; do
             grep -vFxf iana-tlds.txt "$file" > "$file.tmp" && mv "$file.tmp" "$file"
           done
-          # Top-1M (same as before)
+          # Top-1M filtering
           mkdir -p top1m
           curl -fsS -o top1m/umbrella.zip "https://s3-us-west-1.amazonaws.com/umbrella-static/top-1m.csv.zip"
           unzip -jo top1m/umbrella.zip '*.csv' -d top1m/
@@ -110,8 +125,6 @@ jobs:
         if: env.changed != '0'
         run: |
           set -euo pipefail
-          # (reuse your Bash move_if_exists function or Python script here)
-          # Example for bash version:
           move_if_exists() {
             src=$1
             dest=$2
@@ -122,7 +135,14 @@ jobs:
               echo "Warning: File $src does not exist."
             fi
           }
-          # (Your list of moves here, unchanged)
+          # Example moves (extend as needed for all outputs your script produces)
+          move_if_exists output/nrd-14day.txt lists/14-day/domains-only/
+          move_if_exists output/nrd-30day.txt lists/30-day/domains-only/
+          move_if_exists output/entropy-14day.txt lists/14-day/high-entropy/
+          move_if_exists output/entropy-30day.txt lists/30-day/high-entropy/
+          move_if_exists output/phishing-14day.txt lists/14-day_phishing/domains-only/
+          move_if_exists output/phishing-30day.txt lists/30-day_phishing/domains-only/
+          # ... Add other output formats as needed
 
       - name: Generate statistics image
         if: env.changed != '0'
@@ -145,7 +165,7 @@ jobs:
           git add lists img/stats.png hash/current_*.txt
           if ! git diff --cached --quiet; then
             DATE=$(date +'%Y%m%d')
-            git commit -m "ci: update hunter lists $DATE"
+            git commit -m "ci: update NRD lists $DATE"
             git push
           else
             echo "No changes to commit."
@@ -155,8 +175,10 @@ jobs:
         if: env.changed != '0'
         run: |
           set -euo pipefail
-          for file in nordomain_30day nordomain_14day phishing_30day phishing_14day additional; do
-            mv "hash/current_$file.txt" "hash/previous_$file.txt"
+          for file in nrd-30 entropy-30 phishing-30 nrd-14 entropy-14 phishing-14; do
+            if [ -f "hash/current_$file.txt" ]; then
+              mv "hash/current_$file.txt" "hash/previous_$file.txt"
+            fi
           done
           git add hash/previous_*.txt
           if ! git diff --cached --quiet; then
@@ -165,4 +187,3 @@ jobs:
           else
             echo "No hash changes to commit."
           fi
-
